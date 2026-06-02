@@ -16,7 +16,7 @@ version() {
 	script_dir=$( dirname "$(readlink -f "${BASH_SOURCE[0]}")" )
 	tag=0
 	[ $( git -C "${script_dir}" rev-parse --is-inside-work-tree 2>/dev/null ) == "true" ] && tag=$( git -C "${script_dir}" describe --tags --always )
-	echo "bookish-waffle, $( basename ${script_file} ), version ${tag}"
+	echo "bookish-waffle, ${BASH_SOURCE[0]}, version ${tag}"
 	echo ""
 }
 

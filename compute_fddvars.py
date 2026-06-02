@@ -34,7 +34,7 @@ arguments.add_argument(
         'Complete path (absolute or relative) and name '
         'of the mask to limit DVARS to an area of the image. Optional.'
     ),
-    deafult=None,
+    default=None,
 )
 arguments.add_argument(
     '-h', '--help', action='help', help='Show this help message and exit'
@@ -59,10 +59,10 @@ except IndexError:
                      f'with shape {mask.shape}')
 
 dvars = np.sqrt(np.square(np.diff(dvars.mean(0))))
-np.savetxt(f'{filename}_dvars.par')
+np.savetxt(f'{filename}_dvars.par', dvars, fmt="%.6f")
 
 if os.path.exists(f'{filename}.par'):
     # Compute FD
     movpar = np.genfromtxt(f'{filename}.par')
     FD = np.abs(movpar[:-1] - movpar[1:]).sum(1)
-    np.savetxt(f'{origname}_fd.par')
+    np.savetxt(f'{origname}_fd.par', FD, fmt="%.6f")

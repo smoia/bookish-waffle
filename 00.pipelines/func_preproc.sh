@@ -8,7 +8,7 @@ source $( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )/../utils.sh
 
 # Preparing the default values for variables
 voldiscard=10
-polort=4
+polort=3
 slicetimeinterp=none
 despike=no
 fdthr=.3
@@ -17,7 +17,7 @@ den_motreg=no
 den_detrend=no
 applynuisance=no
 fwhm=none
-greyplot=yes
+greyplot=no
 tmp=/tmp
 debug=no
 
@@ -41,7 +41,7 @@ do
 		-den_motreg)		den_motreg=yes;;
 		-den_detrend)		den_detrend=yes;;
 		-applynuisance)		applynuisance=yes;;
-		-skip_greyplots)	greyplot=no;;
+		-make_greyplots)	greyplot=yes;;
 		-fwhm)				fwhm=$2;shift;;
 
 		-tmp)				tmp=$2;shift;;
@@ -110,8 +110,8 @@ echo ${printcall}
 echo ""
 echo "PATH is set to $PATH"
 checkreqvar func
-checkoptvar voldiscard polort slicetimeinterp despike \
-			den_motreg den_detrend den_tissues applynuisance greyplot fwhm tmp debug
+checkoptvar voldiscard polort slicetimeinterp despike fdthr \
+			den_motreg den_detrend applynuisance greyplot fwhm tmp debug
 
 echo "************************************"
 echo "************************************"
@@ -127,19 +127,21 @@ echo ""
 checkoptvar bids
 
 fdir=${bids[root]}/sub-${bids[sub]}/ses-${bids[ses]}/func
-fderivdir=${bids[root]}/derivatives/35msphys/sub-${bids[sub]}/ses-${bids[ses]}/func
 fmapdir=${bids[root]}/sub-${bids[sub]}/ses-${bids[ses]}/fmap
+fderivdir=${bids[root]}/derivatives/35msphys/sub-${bids[sub]}/ses-${bids[ses]}/func
 
 checkoptvar fdir fderivdir fmapdir
 
 
-echo "************************************"
-echo "*** Compute Pepolar ${funcname}"
-echo "************************************"
-echo "************************************"
+if_missing_do mkdir ${fderivdir}
 
 if [ -d ${fmapdir} ]
 then
+	echo "************************************"
+	echo "*** Compute Pepolar ${funcname}"
+	echo "************************************"
+	echo "************************************"
+
 	fmapfiles=()
 	for fmap in "${fmapdir}"/*_dir-*.nii.gz
 	do
@@ -180,7 +182,7 @@ mask=""
 for funcfile in ${funcfiles[@]}
 do
 	funcname=$( basename ${funcfile} )
-	funcprefix=${funcname%"${bids[filesuffix]}"}
+	funcprefix=${funcname%"_${bids[filesuffix]}"}
 	echo "************************************"
 	echo "*** Func correct ${funcname}"
 	echo "************************************"
@@ -205,14 +207,22 @@ do
 	then
 		# create mask & mref - this should trigger only on first run
 		fslmaths ${funcsource} -Tmean ${tmp}/${funcprefix}_avg
-		applytopup --imain=${tmp}/${funcprefix}_avg --datain=${scriptdir}/acqparam.txt --inindex=1 \
-				   --topup=${pepolardir}/outtp --out=${tmp}/${funcprefix}_avg_tpp --verbose --method=jac
-		ImageMath 3 ${tmp}/${funcprefix}_avg_trunc.nii.gz TruncateImageIntensity ${tmp}/${funcprefix}_avg_tpp.nii.gz 0.02 0.98 256
+		masksource=${tmp}/${funcprefix}_avg
+
+		[ -e ${pepolardir}/outtp ] && applytopup --imain=${tmp}/${funcprefix}_avg --datain=${scriptdir}/acqparam.txt --inindex=1 \
+				   --topup=${pepolardir}/outtp --out=${tmp}/${funcprefix}_avg_tpp --verbose --method=jac && masksource=${tmp}/${funcprefix}_avg_tpp
+
+		ImageMath 3 ${tmp}/${funcprefix}_avg_trunc.nii.gz TruncateImageIntensity ${masksource}.nii.gz 0.02 0.98 256
+		# For some reason ImageMath changes 3D grid of image, so 3dcalc puts it back in the right place.
+		3dcalc -a ${masksource}.nii.gz -b ${tmp}/${funcprefix}_avg_trunc.nii.gz -expr "astep(a,0)*b" \
+			   -prefix ${tmp}/${funcprefix}_avg_trunc.nii.gz -overwrite		
+
 		brain_extract -nii ${tmp}/${funcprefix}_avg_trunc -method bet -tmp ${tmp} -slice
 		mref=${fderivdir}/${funcprefix%_run-*}_brain
 		mask=${mref}_mask
 		mv ${tmp}/${funcprefix}_avg_trunc_brain.nii.gz ${mref}.nii.gz
 		mv ${tmp}/${funcprefix}_avg_trunc_brain_mask.nii.gz ${mask}.nii.gz
+
 	fi
 
 	[[ ${nTR} -gt 1 ]] && 3dToutcount -mask ${mask}.nii.gz -fraction -polort 5 -legendre ${funcsource}.nii.gz > ${fderivdir}/${funcprefix}_outcount.1D
@@ -249,7 +259,7 @@ do
 
 		1d_tool.py -infile ${funcsource}.par -demean -write ${fderivdir}/${funcprefix}_mcf_demean.par -overwrite
 		1d_tool.py -infile ${fderivdir}/${funcprefix}_mcf_demean.par -derivative -demean -write ${fderivdir}/${funcprefix}_mcf_deriv1.par -overwrite
-		compute_fddvars -in ${funcsource} -m ${mask}
+		compute_fddvars -in ${funcsource}.nii.gz -m ${mask}.nii.gz
 		mv ${funcsource}_dvars.par ${fderivdir}/${funcprefix}_dvars_post.par
 		mv ${tmp}/${funcprefix}_fd.par ${fderivdir}/${funcprefix}_fd.par
 
@@ -270,9 +280,7 @@ do
 		echo "Preparing nuisance matrix"
 
 		run3dDeconvolve="3dDeconvolve -input ${funcsource}.nii.gz -float \
-		-censor ${fderivdir}/${funcprefix}_censor.1D \
-		-x1D ${fderivdir}/${funcprefix}_nuisreg_censored_mat.1D \
-		-x1D_uncensored ${fderivdir}/${funcprefix}_nuisreg_mat.1D \
+		-x1D ${fderivdir}/${funcprefix}_nuisreg_mat.1D \
 		-xjpeg ${fderivdir}/${funcprefix}_nuisreg_mat.jpg \
 		-x1D_stop"
 
@@ -298,7 +306,7 @@ do
 			echo "Actually applying nuisance"
 			fslmaths ${funcsource} -Tmean ${tmp}/${funcprefix}_avgfornuisance
 			3dTproject -polort 0 -input ${funcsource}.nii.gz  -mask ${mask}.nii.gz \
-			-ort ${func}_nuisreg_mat.1D -prefix ${tmp}/${funcprefix}_prj.nii.gz \
+			-ort ${fderivdir}/${funcprefix}_nuisreg_mat.1D -prefix ${tmp}/${funcprefix}_prj.nii.gz \
 			-overwrite
 			fslmaths ${tmp}/${funcprefix}_prj -add ${tmp}/${funcprefix}_avgfornuisance ${tmp}/${funcprefix}_den
 			funcsource=${tmp}/${funcprefix}_den
@@ -310,9 +318,8 @@ do
 	echo "************************************"
 	echo "************************************"
 
-	applytopup --imain=${fucnsource} --datain=${scriptdir}/acqparam.txt --inindex=1 \
-			   --topup=${pepolardir}/outtp --out=${tmp}/${funcprefix}_tpp --verbose --method=jac
-	funcsource=${tmp}/${funcprefix}_tpp
+	[ -e ${pepolardir}/outtp ] && applytopup --imain=${funcsource} --datain=${scriptdir}/acqparam.txt --inindex=1 \
+			   --topup=${pepolardir}/outtp --out=${tmp}/${funcprefix}_tpp --verbose --method=jac && funcsource=${tmp}/${funcprefix}_tpp
 
 	if [[ ${fwhm} != "none" ]]
 	then
