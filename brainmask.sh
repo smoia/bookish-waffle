@@ -89,32 +89,34 @@ do
 		bet)
 			echo "Extracting brain with FSL's BET"
 			echo "bet ${nii} ${tmp}/${niiname}_bet_brain ${argsbet}"
-			eval "bet ${nii} ${tmp}/${niiname}_bet_brain ${argsbet}"
-			mask=${tmp}/${niiname}_bet_brain_mask;;
+			bet ${nii} ${tmp}/${niiname}_bet_brain ${argsbet}
+			mask=${tmp}/${niiname}_bet_brain_mask
+			fslmaths ${mask} ${mask} -odt char;;
 		avgbet)
 			echo "Extracting brain with FSL's BET on temporally averaged input files"
 			fslmaths ${nii} -Tmean ${tmp}/${niiname}_avg
 			echo "bet ${tmp}/${niiname}_avg ${tmp}/${niiname}_avgbet_brain ${argsbet}"
-			eval "bet ${tmp}/${niiname}_avg ${tmp}/${niiname}_avgbet_brain ${argsbet}"
-			mask=${tmp}/${niiname}_avgbet_brain_mask;;
+			bet ${tmp}/${niiname}_avg ${tmp}/${niiname}_avgbet_brain ${argsbet}
+			mask=${tmp}/${niiname}_avgbet_brain_mask
+			fslmaths ${mask} ${mask} -odt char;;
 		3dSkullStrip|3dss) 
 			echo "Extracting brain with AFNI's 3dSkullStrip"
 			echo "3dSkullStrip -input ${nii}.nii.gz -prefix ${tmp}/${niiname}_3dss_brain.nii.gz ${args3dss}"
-			eval "3dSkullStrip -input ${nii}.nii.gz -prefix ${tmp}/${niiname}_3dss_brain.nii.gz ${args3dss}"
+			3dSkullStrip -input ${nii}.nii.gz -prefix ${tmp}/${niiname}_3dss_brain.nii.gz ${args3dss}
 			# Momentarily forcefully change header because SkullStrips plumbs the volume.
 			3dcalc -a ${nii}.nii.gz -b ${tmp}/${niiname}_3dss_brain.nii.gz -expr "astep(a*astep(b,0),0)" \
-				   -prefix ${tmp}/${niiname}_3dss_brain_mask.nii.gz -overwrite
+				   -prefix ${tmp}/${niiname}_3dss_brain_mask.nii.gz -datum byte -overwrite
 			mask=${tmp}/${niiname}_3dss_brain_mask;;
 		3dAutomask|3dam)
 			echo "Extracting brain with AFNI's 3dAutomask"
 			echo "3dAutomask -prefix ${tmp}/${niiname}_3dam_brain_mask.nii.gz ${args3dam} ${nii}.nii.gz"
-			eval "3dAutomask -prefix ${tmp}/${niiname}_3dam_brain_mask.nii.gz ${args3dam} ${nii}.nii.gz"
+			3dAutomask -prefix ${tmp}/${niiname}_3dam_brain_mask.nii.gz ${args3dam} ${nii}.nii.gz
 			mask=${tmp}/${niiname}_3dam_brain_mask;;
 		synthstrip|fsss)
 			echo "Extracting brain with Fresurfer's SynthStrip"
 			[[ -d ${FREESURFER_HOME}/ssenv ]] && source ${FREESURFER_HOME}/ssenv/bin/activate
 			echo "mri_synthstrip -i ${nii}.nii.gz -o ${tmp}/${niiname}_fsss_brain.nii.gz -m ${tmp}/${niiname}_fsss_brain_mask.nii.gz ${argsfsss}"
-			eval "mri_synthstrip -i ${nii}.nii.gz -o ${tmp}/${niiname}_fsss_brain.nii.gz -m ${tmp}/${niiname}_fsss_brain_mask.nii.gz ${argsfsss}"
+			mri_synthstrip -i ${nii}.nii.gz -o ${tmp}/${niiname}_fsss_brain.nii.gz -m ${tmp}/${niiname}_fsss_brain_mask.nii.gz ${argsfsss}
 			[[ -d ${FREESURFER_HOME}/ssenv ]] && deactivate
 			mask=${tmp}/${niiname}_fsss_brain_mask;;
 
