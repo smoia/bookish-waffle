@@ -8,6 +8,7 @@ ANTS_VER=2.6.5
 C3D_VER=1.0.0
 FSL_VER=6.0.7.22
 FS_VER=8.1.0
+PD_VER=2.1.1
 
 %environment
 export AFNIPATH="/opt/afni-AFNI_{{ AFNI_VER }}"
@@ -53,6 +54,8 @@ apt install -y -q --no-install-recommends \
     build-essential \
     curl \
     git \
+    python3.12 \
+    python3.12-dev \
     python3.10 \
     python3.10-dev \
     python3-distutils \
@@ -60,10 +63,20 @@ apt install -y -q --no-install-recommends \
     python3-rpy2 \
     python-is-python3
 
-pip3 install pip==22.3.1 setuptools==65.5.1 wheel==0.38.4
+# Set alternatives
+update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1
+update-alternatives --install /usr/bin/python python /usr/bin/python3.10 2
+update-alternatives --set python /usr/bin/python3.12
+
+update-alternatives --install /usr/bin/python python3 /usr/bin/python3.12 1
+update-alternatives --install /usr/bin/python python3 /usr/bin/python3.10 2
+update-alternatives --set python3 /usr/bin/python3.12
+
+# Continue installation
+pip3 install pip==26.2.1 setuptools==84.0.0 wheel==0.48.0 packaging==26.3
 
 # Prepare Install for synthstrip
-pip3 install distlib==0.4.0 platformdirs==4.5.0 virtualenv==20.26.2
+pip3 install distlib==0.4.3 platformdirs==4.11.8 virtualenv==21.7.9
 
 # Install synthstrip
 mkdir -p ${TMPDIR}/synthstrip
@@ -221,8 +234,61 @@ python3 fslinstaller.py -d /opt/fsl-{{ FSL_VER }} -V {{ FSL_VER }}
 cd ${TMPDIR} || exit 1
 rm -rf ${TMPDIR}/fsl
 
-# Install datalad, nilearn, peakdet, phys2cvr.
-pip3 install nibabel numpy
+# Install nibabel, numpy, scipy, peakdet, ipython, patch-denoise
+pip3 install \
+    annotated-doc==0.0.5 \
+    asttokens==3.0.2 \
+    certifi==2026.7.22 \
+    charset-normalizer==3.5.1 \
+    cloudpickle==3.1.2 \
+    contourpy==1.4.0 \
+    cycler==0.12.1 \
+    executing==2.2.1 \
+    fonttools==4.65.0 \
+    idna==3.19 \
+    ipython==9.17.1 \
+    ipython_pygments_lexers==1.1.1 \
+    jedi==0.20.0 \
+    Jinja2==3.1.6 \
+    joblib==1.6.0 \
+    kiwisolver==1.5.1 \
+    loguru==0.7.3 \
+    markdown-it-py==4.2.0 \
+    MarkupSafe==3.0.3 \
+    matplotlib==3.11.2 \
+    matplotlib-inline==0.2.2 \
+    mdurl==0.1.2 \
+    narwhals==2.26.0 \
+    nibabel==5.4.2 \
+    nilearn==0.14.1 \
+    numpy==2.5.3 \
+    pandas==3.0.5 \
+    parso==0.8.7 \
+    patch-denoise==2.1.1 \
+    peakdet==0.6.1 \
+    pexpect==4.9.0 \
+    pillow==12.3.0 \
+    prompt_toolkit==3.0.53 \
+    psutil==7.2.2 \
+    ptyprocess==0.7.0 \
+    pure_eval==0.2.4 \
+    Pygments==2.21.0 \
+    pyparsing==3.3.2 \
+    python-dateutil==2.9.0.post0 \
+    requests==2.34.2 \
+    rich==15.0.0 \
+    scikit-learn==1.9.1 \
+    scipy==1.18.1 \
+    shellingham==1.5.4 \
+    six==1.17.0 \
+    stack-data==0.6.3 \
+    threadpoolctl==3.6.0 \
+    tqdm==4.70.1 \
+    traitlets==5.16.1 \
+    typer==0.27.2 \
+    typing_extensions==4.16.0 \
+    urllib3==2.7.0 \
+    wcwidth==0.8.3 
 
 # Final removal of lists and cleanup
 cd /tmp || exit 1

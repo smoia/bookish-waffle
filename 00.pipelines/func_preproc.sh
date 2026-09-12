@@ -9,6 +9,7 @@ source $( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )/../utils.sh
 # Preparing the default values for variables
 mask=""
 voldiscard=10
+LLR=no
 polort=3
 slicetimeinterp=none
 despike=no
@@ -16,6 +17,7 @@ fdthr=.3
 outthr=.05
 den_motreg=no
 den_detrend=no
+highpass=no
 applynuisance=no
 fwhm=none
 greyplot=no
@@ -34,7 +36,8 @@ do
 		-func)				func=$2;shift;;
 
 		-mask)				mask=$2;shift;;
-		-voldiscard)		voldiscard=$2;shift;;
+		-voldiscard)		voldiscard=$2;shift;;	# Discard inital volumes (final 2 volumes are also discarded cause they should be noise maps). Set to -1 to skip discarding altogether.
+		-LLR)				LLR=$2;shift;;			# Apply Local-Low Rank (a.k.a. patch) denoising, e.g. nordic. Options are nordic, optimal-fro, mp-pca, hybrid-pca, raw, optimal-fro-noise, optimal-nuc, optimal-ope, adaptive-qut 
 		-polort)			polort=$2;shift;;
 		-slicetimeinterp)	slicetimeinterp=$2;shift;;
 		-despike)			despike=yes;;
@@ -42,6 +45,7 @@ do
 		-outthr)			outthr=$2;shift;;		# Censor outcount threshold. This DOES NOT apply censoring automatically.
 		-den_motreg)		den_motreg=yes;;
 		-den_detrend)		den_detrend=yes;;
+		-highpass)			highpass=$2;shift;;     # Apply highpass during nuisance. 0.5 saves a good range of (athletic) cardiac pulses. Can go higher if patients or oldies.
 		-applynuisance)		applynuisance=yes;;
 		-make_greyplots)	greyplot=yes;;
 		-fwhm)				fwhm=$2;shift;;
@@ -58,8 +62,8 @@ done
 
 # Check input
 checkreqvar func
-checkoptvar voldiscard polort slicetimeinterp despike fdthr \
-			den_motreg den_detrend applynuisance greyplot fwhm tmp debug
+checkoptvar mask voldiscard LLR polort slicetimeinterp despike fdthr \
+			den_motreg den_detrend highpass applynuisance greyplot fwhm tmp debug
 
 # Debug
 [[ ${debug} == "yes" ]] && set -x && trap 'set +x' EXIT
@@ -112,8 +116,8 @@ echo ${printcall}
 echo ""
 echo "PATH is set to $PATH"
 checkreqvar func
-checkoptvar voldiscard polort slicetimeinterp despike fdthr \
-			den_motreg den_detrend applynuisance greyplot fwhm tmp debug
+checkoptvar mask voldiscard LLR polort slicetimeinterp despike fdthr \
+			den_motreg den_detrend highpass applynuisance greyplot fwhm tmp debug
 
 echo "************************************"
 echo "************************************"
@@ -199,8 +203,8 @@ do
 
 		# discard volumes
 		(( endvol=nTR-2-voldiscard ))
-		[[ "${voldiscard}" -gt "0" ]] && fslroi ${func} ${tmp}/${funcprefix}_dsd ${voldiscard} ${endvol}
-		funcsource=${tmp}/${funcprefix}_dsd
+		[[ "${voldiscard}" -ge "0" ]] && fslroi ${func} ${tmp}/${funcprefix}_dsd ${voldiscard} ${endvol} \
+			&& funcsource=${tmp}/${funcprefix}_dsd
 	fi
 
 	if [[ -z ${mref} ]]
@@ -228,6 +232,14 @@ do
 		else
 			fslmaths ${tmp}/${funcprefix}_avg_trunc -mas ${mask} ${mref}
 		fi
+	fi
+
+	if [[ "${LLR}" != "no" ]]
+	then
+		patch-denoise --method ${LLR} --patch-shape 5 --patch-overlap 2 \
+					  --mask ${mask} --noise-map ${fderivdir}/${funcprefix}_gaussiannoise \
+					  ${funcsource}.nii.gz ${tmp}/${funcprefix}_depatched.nii.gz
+		funcsource=${tmp}/${funcprefix}_depatched
 	fi
 
 	[[ ${nTR} -gt 1 ]] && 3dToutcount -mask ${mask}.nii.gz -fraction -polort 5 -legendre ${funcsource}.nii.gz > ${fderivdir}/${funcprefix}_outcount.1D
@@ -302,6 +314,8 @@ do
 		echo ""
 		echo "${run3dDeconvolve}"
 		echo ""
+		echo "# Highpass in 3dTproject?     ${highpass}"
+		echo ""
 		echo "+++++++++++++++++++++++++++++++++++++++++++++++++++++"
 
 		eval ${run3dDeconvolve}
@@ -310,9 +324,11 @@ do
 		then
 			echo "Actually applying nuisance"
 			fslmaths ${funcsource} -Tmean ${tmp}/${funcprefix}_avgfornuisance
-			3dTproject -polort 0 -input ${funcsource}.nii.gz  -mask ${mask}.nii.gz \
-			-ort ${fderivdir}/${funcprefix}_nuisreg_mat.1D -prefix ${tmp}/${funcprefix}_prj.nii.gz \
-			-overwrite
+			
+			run3dTproject="3dTproject -polort 0 -input ${funcsource}.nii.gz  -mask ${mask}.nii.gz -overwrite"
+			run3dTproject="${run3dTproject} -ort ${fderivdir}/${funcprefix}_nuisreg_mat.1D -prefix ${tmp}/${funcprefix}_prj.nii.gz"
+			[[ "${highpass}" =~ ^[+-]?[0-9]+\.?[0-9]*$ ]] && run3dTproject="${run3dTproject} -stopband 0 ${highpass}"
+			eval ${run3dTproject}
 			fslmaths ${tmp}/${funcprefix}_prj -add ${tmp}/${funcprefix}_avgfornuisance ${tmp}/${funcprefix}_den
 			funcsource=${tmp}/${funcprefix}_den
 		fi
