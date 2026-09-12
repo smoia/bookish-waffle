@@ -7,6 +7,7 @@ source $( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )/../utils.sh
 [[ ( $# -eq 0 ) ]] && displayhelp $0 1
 
 # Preparing the default values for variables
+mask=""
 voldiscard=10
 polort=3
 slicetimeinterp=none
@@ -32,6 +33,7 @@ do
 	case "$1" in
 		-func)				func=$2;shift;;
 
+		-mask)				mask=$2;shift;;
 		-voldiscard)		voldiscard=$2;shift;;
 		-polort)			polort=$2;shift;;
 		-slicetimeinterp)	slicetimeinterp=$2;shift;;
@@ -64,6 +66,7 @@ checkoptvar voldiscard polort slicetimeinterp despike fdthr \
 [[ ${debug} == "no" ]] && trap '[ -n "${tmp}" ] && [ "${tmp}" != "/" ] && rm -rf ${tmp}' EXIT
 ### Remove nifti suffix
 func=$( removeniisfx ${func} )
+mask=$( removeniisfx ${mask} )
 
 # Derived variables
 scriptdir=$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )
@@ -146,8 +149,7 @@ then
 	do
 		fmapname=$( basename $( removeniisfx ${fmap} ) )
 		ImageMath 3 ${tmp}/${fmapname}_trunc.nii.gz TruncateImageIntensity ${fmapdir}/${fmapname}.nii.gz 0.02 0.98 256
-		brain_extract -nii ${tmp}/${fmapname}_trunc -method bet -tmp ${tmp} -slice
-		fmapfiles+=(${tmp}/${fmapname}_trunc_brain)
+		fmapfiles+=(${tmp}/${fmapname}_trunc)
 	done
 
 	if [ ${#fmapfiles[@]} -gt 0 ] || [[ ! -z "${fmapfiles[0]}" && ${#fmapfiles[@]} -gt 1 ]]
@@ -177,7 +179,6 @@ else
 fi
 
 mref=""
-mask=""
 for funcfile in ${funcfiles[@]}
 do
 	funcname=$( basename ${funcfile} )
@@ -216,12 +217,17 @@ do
 		3dcalc -a ${masksource}.nii.gz -b ${tmp}/${funcprefix}_avg_trunc.nii.gz -expr "astep(a,0)*b" \
 			   -prefix ${tmp}/${funcprefix}_avg_trunc.nii.gz -overwrite		
 
-		brain_extract -nii ${tmp}/${funcprefix}_avg_trunc -method bet -tmp ${tmp} -slice
 		mref=${fderivdir}/${funcprefix%_run-*}_brain
-		mask=${mref}_mask
-		mv ${tmp}/${funcprefix}_avg_trunc_brain.nii.gz ${mref}.nii.gz
-		mv ${tmp}/${funcprefix}_avg_trunc_brain_mask.nii.gz ${mask}.nii.gz
-
+		if [[ -z ${mask} || ! -e ${mask} ]]
+		then
+			echo "!!! Mask not set or not found, computing !!!"
+			brain_extract -nii ${tmp}/${funcprefix}_avg_trunc -method bet -tmp ${tmp} -slice
+			mask=${mref}_mask
+			mv ${tmp}/${funcprefix}_avg_trunc_brain.nii.gz ${mref}.nii.gz
+			mv ${tmp}/${funcprefix}_avg_trunc_brain_mask.nii.gz ${mask}.nii.gz
+		else
+			fslmaths ${tmp}/${funcprefix}_avg_trunc -mas ${mask} ${mref}
+		fi
 	fi
 
 	[[ ${nTR} -gt 1 ]] && 3dToutcount -mask ${mask}.nii.gz -fraction -polort 5 -legendre ${funcsource}.nii.gz > ${fderivdir}/${funcprefix}_outcount.1D
