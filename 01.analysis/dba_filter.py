@@ -6,7 +6,9 @@ from pathlib import Path
 
 import nibabel as nib
 import numpy as np
+from fastdtw import fastdtw
 from joblib import Parallel, delayed
+from scipy.spatial.distance import euclidean
 from scipy.stats import zscore
 from tslearn.barycenters import dtw_barycenter_averaging
 
@@ -18,27 +20,79 @@ def fit_linear_scale(source_signal, target_signal):
     return gain, offset
 
 
+def weighted_dba(X_neighbors, weights, init_center, max_iter=6):
+    """
+    Computes weighted DTW Barycenter Averaging for a set of time series.
+
+    Parameters
+    ----------
+    X_neighbors : ndarray of shape (K, T)
+        Normalized time series of the K spatial neighbors.
+    weights : ndarray of shape (K,)
+        Normalized Gaussian spatial weights for each neighbor (sum to 1.0).
+    init_center : ndarray of shape (T,)
+        Initial seed center (e.g., normalized probe time series).
+    max_iter : int
+        Number of DBA convergence iterations.
+    """
+    K, T = X_neighbors.shape
+    center = init_center.copy()
+
+    for _ in range(max_iter):
+        # Accumulators for weighted barycenter update across time steps
+        updated_center = np.zeros(T)
+        weight_acc = np.zeros(T) + 1e-8  # Avoid division by zero
+
+        for k in range(K):
+            # Compute DTW warping path between current center and neighbor k
+            _, path = fastdtw(center, X_neighbors[k], dist=euclidean)
+
+            # Accumulate weighted values along the warping path
+            for t_center, t_neighbor in path:
+                updated_center[t_center] += weights[k] * X_neighbors[k, t_neighbor]
+                weight_acc[t_center] += weights[k]
+
+        # Update center estimate
+        center = updated_center / weight_acc
+
+    return center
+
+
 def process_single_voxel(
-    i, matrix_XT, coords_3d, probe_init, radius_mm, max_iter, keep_residuals
+    i, matrix_XT, coords_3d, probe_init, radius_mm, max_iter, gaussian, keep_residuals
 ):
     """Worker function to execute Spatial DBA for voxel index i."""
-    # 1. Spatial distance lookup in millimeter coordinates
+    # Spatial distance lookup in millimeter coordinates
     dist = np.linalg.norm(coords_3d - coords_3d[i], axis=1)
-    neighbor_indices = np.where(dist <= radius_mm)[0]
+    mask_in_radius = dist <= radius_mm
+    neighbor_indices = np.where(mask_in_radius)[0]
+    neighbor_dists = dist[mask_in_radius]
 
     # Extract & normalize local neighborhood time series
     neighbor_series = matrix_XT[neighbor_indices]
     norm_neighbors = np.array([zscore(s) for s in neighbor_series])
-    X_neighbors = norm_neighbors[:, :, np.newaxis]
 
-    # 2. Compute DTW Barycenter Averaging initialized with the probe
-    dba_consensus = dtw_barycenter_averaging(
-        X_neighbors,
-        init_barycenter=probe_init,
-        max_iter=max_iter,
-        metric='euclidean',
-        verbose=False,
-    ).flatten()
+    if gaussian:
+        # Compute Gaussian spatial weights w_ij
+        raw_weights = np.exp(-(neighbor_dists**2) / (2 * ((radius_mm / 3) ** 2)))
+        spatial_weights = raw_weights / np.sum(raw_weights)
+        # Perform Weighted DBA initialized with the probe
+        dba_consensus = weighted_dba(
+            norm_neighbors,
+            weights=spatial_weights,
+            init_center=probe_init,
+            max_iter=max_iter,
+        )
+    else:
+        # Compute DTW Barycenter Averaging initialized with the probe
+        X_neighbors = norm_neighbors[:, :, np.newaxis]
+        dba_consensus = dtw_barycenter_averaging(
+            X_neighbors,
+            init_barycenter=probe_init,
+            max_iter=max_iter,
+            metric='euclidean',
+            verbose=False,
+        ).flatten()
 
     # 3. Fit amplitude back to target voxel's dynamic range
     gain, offset = fit_linear_scale(dba_consensus, matrix_XT[i])
@@ -88,11 +142,22 @@ arguments.add_argument(
     default=None,
 )
 arguments.add_argument(
+    '-gaussian',
+    '--gaussian',
+    dest='gaussian',
+    action='store_true',
+    help=(
+        'Apply a gaussian weight of sigma=radius/3 in the ROI for DBA filtering. '
+        'Default not to.'
+    ),
+    default=False,
+)
+arguments.add_argument(
     '-residuals',
     '--keep_residuals',
     dest='keep_residuals',
     action='store_true',
-    help=('Keep residuals in returning DBA.'),
+    help=('Keep residuals in returning DBA. Default not to.'),
     default=False,
 )
 arguments.add_argument(
@@ -168,6 +233,7 @@ results = Parallel(n_jobs=n_workers, batch_size=64)(
         probe_init,
         args.radius_mm,
         args.max_iter,
+        args.gaussian,
         args.keep_residuals,
     )
     for i in range(N)
