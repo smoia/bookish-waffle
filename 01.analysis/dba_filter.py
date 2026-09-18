@@ -6,10 +6,9 @@ from pathlib import Path
 
 import nibabel as nib
 import numpy as np
-from fastdtw import fastdtw
-from joblib import Parallel, delayed
-from scipy.spatial.distance import euclidean
+from joblib import delayed
 from scipy.stats import zscore
+from tqdm_joblib import ParallelPbar
 from tslearn.barycenters import dtw_barycenter_averaging
 
 
@@ -20,46 +19,16 @@ def fit_linear_scale(source_signal, target_signal):
     return gain, offset
 
 
-def weighted_dba(X_neighbors, weights, init_center, max_iter=6):
-    """
-    Computes weighted DTW Barycenter Averaging for a set of time series.
-
-    Parameters
-    ----------
-    X_neighbors : ndarray of shape (K, T)
-        Normalized time series of the K spatial neighbors.
-    weights : ndarray of shape (K,)
-        Normalized Gaussian spatial weights for each neighbor (sum to 1.0).
-    init_center : ndarray of shape (T,)
-        Initial seed center (e.g., normalized probe time series).
-    max_iter : int
-        Number of DBA convergence iterations.
-    """
-    K, T = X_neighbors.shape
-    center = init_center.copy()
-
-    for _ in range(max_iter):
-        # Accumulators for weighted barycenter update across time steps
-        updated_center = np.zeros(T)
-        weight_acc = np.zeros(T) + 1e-8  # Avoid division by zero
-
-        for k in range(K):
-            # Compute DTW warping path between current center and neighbor k
-            _, path = fastdtw(center, X_neighbors[k], dist=euclidean)
-
-            # Accumulate weighted values along the warping path
-            for t_center, t_neighbor in path:
-                updated_center[t_center] += weights[k] * X_neighbors[k, t_neighbor]
-                weight_acc[t_center] += weights[k]
-
-        # Update center estimate
-        center = updated_center / weight_acc
-
-    return center
-
-
 def process_single_voxel(
-    i, matrix_XT, coords_3d, probe_init, radius_mm, max_iter, gaussian, keep_residuals
+    i,
+    matrix_XT,
+    coords_3d,
+    probe_init,
+    radius_mm,
+    max_iter,
+    gaussian,
+    keep_residuals,
+    sc_window_size,
 ):
     """Worker function to execute Spatial DBA for voxel index i."""
     # Spatial distance lookup in millimeter coordinates
@@ -76,25 +45,30 @@ def process_single_voxel(
         # Compute Gaussian spatial weights w_ij
         raw_weights = np.exp(-(neighbor_dists**2) / (2 * ((radius_mm / 3) ** 2)))
         spatial_weights = raw_weights / np.sum(raw_weights)
-        # Perform Weighted DBA initialized with the probe
-        dba_consensus = weighted_dba(
-            norm_neighbors,
-            weights=spatial_weights,
-            init_center=probe_init,
-            max_iter=max_iter,
-        )
     else:
-        # Compute DTW Barycenter Averaging initialized with the probe
-        X_neighbors = norm_neighbors[:, :, np.newaxis]
-        dba_consensus = dtw_barycenter_averaging(
-            X_neighbors,
-            init_barycenter=probe_init,
-            max_iter=max_iter,
-            metric='euclidean',
-            verbose=False,
-        ).flatten()
+        spatial_weights = None
 
-    # 3. Fit amplitude back to target voxel's dynamic range
+    if sc_window_size is not None:
+        metric_params = {
+            'global_constraint': 'sakoe_chiba',
+            'sakoe_chiba_radius': sc_window_size,
+        }
+    else:
+        metric_params = None
+
+    # Compute DTW Barycenter Averaging initialized with the probe
+    X_neighbors = norm_neighbors[:, :, np.newaxis]
+
+    dba_consensus = dtw_barycenter_averaging(
+        X_neighbors,
+        init_barycenter=probe_init,
+        max_iter=max_iter,
+        verbose=True,
+        weights=spatial_weights,
+        metric_params=metric_params,
+    ).flatten()
+
+    # Fit amplitude back to target voxel's dynamic range
     gain, offset = fit_linear_scale(dba_consensus, matrix_XT[i])
 
     dba_signal = dba_consensus * gain
@@ -169,12 +143,24 @@ arguments.add_argument(
     default=8,
 )
 arguments.add_argument(
+    '-scwp',
+    '--sakoe_chiba_window',
+    dest='win_perc',
+    type=float,
+    help=(
+        'Percentage of time to consider to implement a Sakoe Chiba Constrain on DTW. '
+        'Optional. Default None, which means no contrain is applied (however 0.1 is '
+        'suggested).'
+    ),
+    default=None,
+)
+arguments.add_argument(
     '-maxiter',
     '--maxiter',
     dest='maxiter',
     type=int,
     help=('Maximum iterations for DBA convergence. Optional. Default 6.'),
-    default=6,
+    default=30,
 )
 arguments.add_argument(
     '-j',
@@ -208,13 +194,15 @@ grid_indices = np.argwhere(mask)
 matrix_XT = tdata[mask != 0]
 N, T = matrix_XT.shape
 
-affine = img.affine
-
 print(f'Extracted {N} active voxels across {T} temporal volumes.')
 
+sc_window_size = None if args.win_perc is None else T * args.win_perc
+
+affine = img.affine
+
 # Transform Voxel Grid Coordinates to Real-World mm (N x 3)
-coords_homo = np.hstack([grid_indices, np.ones((N, 1))])
-coords_3d = (affine @ coords_homo.T)[:3, :].T
+coords_homotopic = np.hstack([grid_indices, np.ones((N, 1))])
+coords_3d = (affine @ coords_homotopic.T)[:3, :].T
 
 total_cores = os.cpu_count() or 1
 if args.n_jobs is None or args.n_jobs <= 0:
@@ -225,7 +213,7 @@ else:
 
 print(f'Executing Spatial DBA (Radius = {args.radius_mm}mm, n_jobs={n_workers})...')
 
-results = Parallel(n_jobs=n_workers, batch_size=64)(
+results = ParallelPbar(n_jobs=n_workers, batch_size=64)(
     delayed(process_single_voxel)(
         i,
         matrix_XT,
@@ -235,13 +223,14 @@ results = Parallel(n_jobs=n_workers, batch_size=64)(
         args.max_iter,
         args.gaussian,
         args.keep_residuals,
+        sc_window_size,
     )
     for i in range(N)
 )
 
 filtered_XT = np.array(results, dtype=np.float32)
 
-# 4. Reconstruct and Save 4D NIfTI File
+# Reconstruct and Save 4D NIfTI File
 print('Reconstructing 4D volume...')
 filtered_4d = np.zeros_like(tdata)
 filtered_4d[mask] = filtered_XT
